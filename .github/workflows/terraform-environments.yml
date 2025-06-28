@@ -8,7 +8,7 @@ on:
       - main
     paths:
       - 'terraform/**'
-      - 'pipelines/.github/workflows/terraform-environments.yml'
+      - '.github/workflows/terraform-environments.yml'
   workflow_dispatch:
     inputs:
       environment:
