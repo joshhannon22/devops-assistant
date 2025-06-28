@@ -1,0 +1,96 @@
+name: 'Setup Terraform Backend'
+
+on:
+  workflow_dispatch:
+    inputs:
+      storage_account_name:
+        description: 'Storage account name for Terraform state'
+        required: true
+        default: 'tfstateaks'
+      resource_group_name:
+        description: 'Resource group name for storage account'
+        required: true
+        default: 'rg-terraform-state'
+      location:
+        description: 'Azure region for storage account'
+        required: true
+        default: 'East US'
+
+env:
+  AZURE_CLI_VERSION: '2.53.0'
+
+jobs:
+  setup-backend:
+    name: 'Setup Terraform Backend'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 'Checkout'
+      uses: actions/checkout@v4
+
+    - name: 'Setup Azure CLI'
+      uses: azure/setup-azure-cli@v3
+      with:
+        version: ${{ env.AZURE_CLI_VERSION }}
+
+    - name: 'Azure Login'
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: 'Create Resource Group'
+      run: |
+        az group create \
+          --name ${{ github.event.inputs.resource_group_name }} \
+          --location ${{ github.event.inputs.location }} \
+          --tags Environment=Production ManagedBy=GitHub
+
+    - name: 'Create Storage Account'
+      run: |
+        az storage account create \
+          --name ${{ github.event.inputs.storage_account_name }} \
+          --resource-group ${{ github.event.inputs.resource_group_name }} \
+          --location ${{ github.event.inputs.location }} \
+          --sku Standard_LRS \
+          --encryption-services blob \
+          --tags Environment=Production ManagedBy=GitHub
+
+    - name: 'Create Storage Container'
+      run: |
+        az storage container create \
+          --name tfstate \
+          --account-name ${{ github.event.inputs.storage_account_name }}
+
+    - name: 'Get Storage Account Key'
+      id: storage-key
+      run: |
+        STORAGE_KEY=$(az storage account keys list \
+          --resource-group ${{ github.event.inputs.resource_group_name }} \
+          --account-name ${{ github.event.inputs.storage_account_name }} \
+          --query '[0].value' -o tsv)
+        echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+
+    - name: 'Create Backend Config'
+      run: |
+        cat > terraform/backend.tf <<EOF
+        terraform {
+          backend "azurerm" {
+            resource_group_name  = "${{ github.event.inputs.resource_group_name }}"
+            storage_account_name = "${{ github.event.inputs.storage_account_name }}"
+            container_name       = "tfstate"
+            key                  = "aks.terraform.tfstate"
+          }
+        }
+        EOF
+
+    - name: 'Output Backend Information'
+      run: |
+        echo "## Terraform Backend Setup Complete ✅" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Storage Account:** ${{ github.event.inputs.storage_account_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Resource Group:** ${{ github.event.inputs.resource_group_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Container:** tfstate" >> $GITHUB_STEP_SUMMARY
+        echo "**State File:** aks.terraform.tfstate" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The backend.tf file has been created in the terraform directory." >> $GITHUB_STEP_SUMMARY
+        echo "You can now commit this file and use remote state management." >> $GITHUB_STEP_SUMMARY 

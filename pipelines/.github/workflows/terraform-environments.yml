@@ -1,0 +1,186 @@
+name: 'Terraform Multi-Environment Deployment'
+
+on:
+  push:
+    branches:
+      - develop
+      - staging
+      - main
+    paths:
+      - 'terraform/**'
+      - 'pipelines/.github/workflows/terraform-environments.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  TF_VERSION: '1.5.0'
+  AZURE_CLI_VERSION: '2.53.0'
+  TERRAFORM_DIR: 'terraform'
+
+jobs:
+  terraform:
+    name: 'Terraform ${{ github.event.inputs.environment || github.ref_name }}'
+    runs-on: ubuntu-latest
+    
+    # Use environment protection rules
+    environment: ${{ github.event.inputs.environment || github.ref_name }}
+    
+    defaults:
+      run:
+        working-directory: ${{ env.TERRAFORM_DIR }}
+
+    steps:
+    - name: 'Checkout'
+      uses: actions/checkout@v4
+
+    - name: 'Setup Azure CLI'
+      uses: azure/setup-azure-cli@v3
+      with:
+        version: ${{ env.AZURE_CLI_VERSION }}
+
+    - name: 'Azure Login'
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: 'Setup Terraform'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: 'Determine Environment'
+      id: env
+      run: |
+        if [ "${{ github.event.inputs.environment }}" != "" ]; then
+          echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref_name }}" == "develop" ]; then
+          echo "environment=dev" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref_name }}" == "staging" ]; then
+          echo "environment=staging" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref_name }}" == "main" ]; then
+          echo "environment=prod" >> $GITHUB_OUTPUT
+        else
+          echo "environment=dev" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 'Create Environment Variables'
+      run: |
+        # Create environment-specific tfvars
+        cat > terraform.tfvars <<EOF
+        # Environment: ${{ steps.env.outputs.environment }}
+        resource_group_name = "rg-aks-${{ steps.env.outputs.environment }}"
+        location            = "${{ secrets.AZURE_LOCATION || 'East US' }}"
+        cluster_name        = "aks-${{ steps.env.outputs.environment }}"
+        kubernetes_version  = "${{ secrets.KUBERNETES_VERSION || '1.28.0' }}"
+        
+        # Node configuration based on environment
+        node_count          = ${{ steps.env.outputs.environment == 'prod' && '5' || steps.env.outputs.environment == 'staging' && '3' || '2' }}
+        vm_size             = "${{ steps.env.outputs.environment == 'prod' && 'Standard_DS3_v2' || 'Standard_DS2_v2' }}"
+        enable_auto_scaling = true
+        min_count           = ${{ steps.env.outputs.environment == 'prod' && '3' || '1' }}
+        max_count           = ${{ steps.env.outputs.environment == 'prod' && '10' || steps.env.outputs.environment == 'staging' && '5' || '3' }}
+        
+        # Monitoring and policy
+        enable_azure_policy = true
+        enable_azure_monitor = true
+        
+        # Network configuration
+        network_plugin      = "azure"
+        network_policy      = "azure"
+        service_cidr        = "${{ steps.env.outputs.environment == 'prod' && '10.0.0.0/16' || steps.env.outputs.environment == 'staging' && '10.1.0.0/16' || '10.2.0.0/16' }}"
+        dns_service_ip      = "${{ steps.env.outputs.environment == 'prod' && '10.0.0.10' || steps.env.outputs.environment == 'staging' && '10.1.0.10' || '10.2.0.10' }}"
+        
+        # Tags
+        tags = {
+          Environment = "${{ steps.env.outputs.environment }}"
+          Project     = "AKS Deployment"
+          ManagedBy   = "Terraform"
+          Branch      = "${{ github.ref_name }}"
+          Commit      = "${{ github.sha }}"
+        }
+        EOF
+
+    - name: 'Terraform Init'
+      run: terraform init
+
+    - name: 'Terraform Validate'
+      run: terraform validate
+
+    - name: 'Terraform Plan'
+      id: plan
+      run: |
+        terraform plan \
+          -var-file="terraform.tfvars" \
+          -out=tfplan
+      continue-on-error: true
+
+    - name: 'Terraform Apply (Auto)'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: terraform apply -auto-approve tfplan
+
+    - name: 'Terraform Apply (Manual)'
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
+      run: |
+        terraform apply \
+          -var-file="terraform.tfvars" \
+          -auto-approve
+
+    - name: 'Terraform Destroy (Manual)'
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+      run: |
+        terraform destroy \
+          -var-file="terraform.tfvars" \
+          -auto-approve
+
+    - name: 'Get AKS Credentials'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        az aks get-credentials \
+          --resource-group $(terraform output -raw resource_group_name) \
+          --name $(terraform output -raw cluster_name) \
+          --overwrite-existing
+
+    - name: 'Verify Cluster Status'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        kubectl cluster-info
+        kubectl get nodes
+        kubectl get pods -n kube-system
+
+    - name: 'Upload Terraform Plan'
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: terraform-plan-${{ steps.env.outputs.environment }}
+        path: ${{ env.TERRAFORM_DIR }}/tfplan
+        retention-days: 30
+
+    - name: 'Notify Deployment'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "## AKS Deployment Complete ✅" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** ${{ steps.env.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Cluster:** $(terraform output -raw cluster_name)" >> $GITHUB_STEP_SUMMARY
+        echo "**Resource Group:** $(terraform output -raw resource_group_name)" >> $GITHUB_STEP_SUMMARY
+        echo "**Nodes:** $(kubectl get nodes --no-headers | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Deployment completed successfully!" >> $GITHUB_STEP_SUMMARY 

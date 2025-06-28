@@ -1,0 +1,107 @@
+name: 'Terraform Security Scan'
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - staging
+    paths:
+      - 'terraform/**'
+      - 'pipelines/.github/workflows/terraform-security.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+      - staging
+    paths:
+      - 'terraform/**'
+      - 'pipelines/.github/workflows/terraform-security.yml'
+
+jobs:
+  security-scan:
+    name: 'Security Scan'
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+    - name: 'Checkout'
+      uses: actions/checkout@v4
+
+    - name: 'Terraform Format Check'
+      run: terraform fmt -check -recursive
+
+    - name: 'Terraform Validate'
+      run: terraform validate
+
+    - name: 'Run TFSec'
+      uses: aquasecurity/tfsec-action@v1.0.0
+      with:
+        working_directory: terraform
+        format: sarif
+        out: tfsec.sarif
+
+    - name: 'Upload TFSec SARIF file'
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: terraform/tfsec.sarif
+
+    - name: 'Run Checkov'
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: terraform
+        framework: terraform
+        output_format: sarif
+        output_file_path: checkov.sarif
+        soft_fail: true
+
+    - name: 'Upload Checkov SARIF file'
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: terraform/checkov.sarif
+
+    - name: 'Run Trivy'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: 'terraform'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: 'Upload Trivy SARIF file'
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: terraform/trivy-results.sarif
+
+    - name: 'Security Summary'
+      if: always()
+      run: |
+        echo "## Security Scan Results 🔒" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "tfsec.sarif" ]; then
+          echo "✅ **TFSec** scan completed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **TFSec** scan failed" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "checkov.sarif" ]; then
+          echo "✅ **Checkov** scan completed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Checkov** scan failed" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "trivy-results.sarif" ]; then
+          echo "✅ **Trivy** scan completed" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Trivy** scan failed" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Check the Security tab for detailed results." >> $GITHUB_STEP_SUMMARY 
