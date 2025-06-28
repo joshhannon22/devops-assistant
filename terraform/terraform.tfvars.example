@@ -1,0 +1,32 @@
+# Resource Group Configuration
+resource_group_name = "rg-aks-cluster"
+location            = "East US"
+
+# AKS Cluster Configuration
+cluster_name        = "aks-cluster"
+kubernetes_version  = "1.28.0"
+
+# Node Pool Configuration
+node_count          = 3
+vm_size             = "Standard_DS2_v2"
+enable_auto_scaling = true
+min_count           = 1
+max_count           = 5
+
+# Monitoring and Policy
+enable_azure_policy = true
+enable_azure_monitor = true
+
+# Network Configuration
+network_plugin      = "azure"
+network_policy      = "azure"
+service_cidr        = "10.0.0.0/16"
+dns_service_ip      = "10.0.0.10"
+
+# Tags
+tags = {
+  Environment = "Development"
+  Project     = "AKS Deployment"
+  ManagedBy   = "Terraform"
+  Owner       = "DevOps Team"
+} 
