@@ -1,14 +1,6 @@
 name: 'Terraform Multi-Environment Deployment'
 
 on:
-  push:
-    branches:
-      - develop
-      - staging
-      - main
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-environments.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -52,7 +44,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: 'Setup Azure CLI'
-      uses: azure/setup-azure-cli@v3
+      uses: azure/azure-cli-action@v1
       with:
         version: ${{ env.AZURE_CLI_VERSION }}
 

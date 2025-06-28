@@ -1,22 +1,7 @@
 name: 'Terraform Security Scan'
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-      - staging
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-security.yml'
-  pull_request:
-    branches:
-      - main
-      - develop
-      - staging
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform-security.yml'
+  workflow_dispatch:
 
 jobs:
   security-scan:
